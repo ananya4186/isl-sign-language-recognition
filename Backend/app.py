@@ -3,6 +3,7 @@ from flask_cors import CORS
 from predict import decode_image, extract_landmarks_from_image
 from tts import generate_speech
 import random
+import os
 
 app = Flask(__name__)
 CORS(app)
@@ -10,6 +11,10 @@ CORS(app)
 @app.route('/')
 def home():
     return jsonify({"message": "ISL Backend is running!"})
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok"})
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -40,6 +45,7 @@ def predict():
         })
 
     except Exception as e:
+        print(f"PREDICT ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/speak', methods=['POST'])
@@ -51,12 +57,19 @@ def speak():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    filename = generate_speech(text, speed)
-    return jsonify({"audio_url": f"/audio/{filename}"})
+    try:
+        filename = generate_speech(text, speed)
+        
+        # Send audio file directly as blob
+        return send_from_directory('static', filename, mimetype='audio/mpeg')
+
+    except Exception as e:
+        print(f"SPEAK ERROR: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/audio/<filename>')
 def get_audio(filename):
     return send_from_directory('static', filename)
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000, host='0.0.0.0')
+    app.run(host='0.0.0.0', debug=True, port=5000)

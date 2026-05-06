@@ -20,15 +20,18 @@ def decode_image(base64_string):
 
 def extract_landmarks_from_image(img):
     """Detect hand and get 21 landmark points"""
+    
+    # None check added
+    if img is None:
+        return None
+    
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-
     options = HandLandmarkerOptions(
         base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
         running_mode=VisionRunningMode.IMAGE,
         num_hands=1
     )
-
     with HandLandmarker.create_from_options(options) as landmarker:
         result = landmarker.detect(mp_image)
 
@@ -38,7 +41,6 @@ def extract_landmarks_from_image(img):
     landmarks = []
     for lm in result.hand_landmarks[0]:
         landmarks.extend([lm.x, lm.y, lm.z])
-
     return np.array(landmarks)
 
 print("predict.py loaded successfully!")
