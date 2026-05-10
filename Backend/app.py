@@ -6,7 +6,7 @@ import random
 import os
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins="*")
 
 @app.route('/')
 def home():
