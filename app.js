@@ -4,7 +4,7 @@
 
 // Configuration
 const CONFIG = {
-    API_BASE: 'http://192.168.1.6:5000',
+    API_BASE: 'http://127.0.0.1:5000',
     FRAME_INTERVAL: 500, // ms
     CONFIDENCE_THRESHOLD: 0.85,
     DEBOUNCE_COUNT: 3, // Same gesture 3x to confirm
@@ -241,7 +241,8 @@ function clearText() {
 // ==========================================
 
 async function speakText() {
-    const text = state.currentText.trim();
+    // ✅ FIX: Read from textOutput box if state.currentText is empty
+    const text = (state.currentText || elements.textOutput.value || '').trim();
     
     if (!text) {
         updateStatus('⚠️ No text to speak', 'warning');

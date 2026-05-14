@@ -1,76 +1,79 @@
 import cv2
+import mediapipe as mp
 import numpy as np
 import base64
 import tensorflow as tf
 import json
 from tensorflow.keras.layers import LSTM
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
-# Fix for time_major argument issue
+# ==========================================
+# FIX FOR KERAS VERSION COMPATIBILITY
+# ==========================================
 class FixedLSTM(LSTM):
     def __init__(self, *args, **kwargs):
         kwargs.pop('time_major', None)
         super().__init__(*args, **kwargs)
 
-# Load labels
-with open('model/labels.json') as f:
-    labels = json.load(f)
+# Setup MediaPipe
+BaseOptions = mp.tasks.BaseOptions
+HandLandmarker = mp.tasks.vision.HandLandmarker
+HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+VisionRunningMode = mp.tasks.vision.RunningMode
 
-# Load trained model with custom objects fix
+# Load model and labels with FixedLSTM
 model = tf.keras.models.load_model(
     'model/isl_lstm_combined.h5',
     custom_objects={'LSTM': FixedLSTM}
 )
+labels = json.load(open('model/labels.json'))
 print("Model loaded successfully!")
 
 def decode_image(base64_string):
-    try:
-        img_bytes = base64.b64decode(base64_string)
-        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        return img
-    except Exception as e:
-        print(f"DECODE ERROR: {e}")
-        return None
+    """Convert base64 image string to OpenCV image"""
+    img_bytes = base64.b64decode(base64_string)
+    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    return img
 
 def extract_landmarks_from_image(img):
+    """Detect hand and get 21 landmark points"""
+    if img is None:
+        return None
     try:
-        if img is None:
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        options = HandLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
+            running_mode=VisionRunningMode.IMAGE,
+            num_hands=1
+        )
+        with HandLandmarker.create_from_options(options) as landmarker:
+            result = landmarker.detect(mp_image)
+        if not result.hand_landmarks:
             return None
-        return np.random.rand(63)
+        landmarks = []
+        for lm in result.hand_landmarks[0]:
+            landmarks.extend([lm.x, lm.y, lm.z])
+        return np.array(landmarks)
     except Exception as e:
         print(f"LANDMARK ERROR: {e}")
         return None
 
-def run_prediction(base64_image):
-    img = decode_image(base64_image)
-    landmarks = extract_landmarks_from_image(img)
-
+def predict_gesture(landmarks):
+    """Predict gesture from landmarks"""
     if landmarks is None:
-        return {
-            "label": None,
-            "confidence": 0.0,
-            "hand_detected": False
-        }
-
+        return None, 0.0
     try:
-        input_data = landmarks.reshape(1, 1, -1)
-        predictions = model.predict(input_data, verbose=0)
-        class_index = np.argmax(predictions)
-        confidence = float(predictions[0][class_index])
+        sequence = landmarks.reshape(1, 1, -1)
+        prediction = model.predict(sequence, verbose=0)
+        class_index = np.argmax(prediction)
+        confidence = float(np.max(prediction))
         label = labels[str(class_index)]
-
-        return {
-            "label": label,
-            "confidence": round(confidence, 2),
-            "hand_detected": True
-        }
-
+        return label, confidence
     except Exception as e:
         print(f"PREDICTION ERROR: {e}")
-        return {
-            "label": None,
-            "confidence": 0.0,
-            "hand_detected": False
-        }
+        return None, 0.0
 
 print("predict.py loaded successfully!")
