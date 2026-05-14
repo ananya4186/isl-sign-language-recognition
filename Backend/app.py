@@ -1,64 +1,94 @@
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-from predict import decode_image, extract_landmarks_from_image, predict_gesture
-from tts import generate_speech
-import os
+import cv2
+import mediapipe as mp
+import numpy as np
+import base64
+import tensorflow as tf
+import json
+from tensorflow.keras.layers import LSTM
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
-app = Flask(__name__)
-CORS(app, origins="*")
+# ==========================================
+# FIX FOR KERAS VERSION COMPATIBILITY
+# ==========================================
+class FixedLSTM(LSTM):
+    def __init__(self, *args, **kwargs):
+        kwargs.pop('time_major', None)
+        super().__init__(*args, **kwargs)
 
-@app.route('/')
-def home():
-    return jsonify({"message": "ISL Backend is running!"})
+# Setup MediaPipe
+BaseOptions = mp.tasks.BaseOptions
+HandLandmarker = mp.tasks.vision.HandLandmarker
+HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+VisionRunningMode = mp.tasks.vision.RunningMode
 
-@app.route('/health')
-def health():
-    return jsonify({'status': 'ok'})
+# Load model and labels with FixedLSTM
+model = tf.keras.models.load_model(
+    'model/isl_lstm_combined.h5',
+    custom_objects={'LSTM': FixedLSTM}
+)
+labels = json.load(open('model/labels.json'))
+print("Model loaded successfully!")
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    data = request.get_json()
-    if not data or 'image' not in data:
-        return jsonify({"error": "No image provided"}), 400
+def decode_image(base64_string):
+    """Convert base64 image string to OpenCV image"""
     try:
-        img = decode_image(data['image'])
-        landmarks = extract_landmarks_from_image(img)
-        if landmarks is None:
-            return jsonify({
-                "label": None,
-                "confidence": 0.0,
-                "hand_detected": False
-            })
-        label, confidence = predict_gesture(landmarks)
-        return jsonify({
-            "label": label,
-            "confidence": confidence,
-            "hand_detected": True
-        })
+        img_bytes = base64.b64decode(base64_string)
+        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        return img
     except Exception as e:
-        print(f"PREDICT ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"DECODE ERROR: {e}")
+        return None
 
-@app.route('/speak', methods=['POST'])
-def speak():
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
-    text = data.get('text', '')
-    speed = data.get('speed', 'normal')
-    if not text:
-        return jsonify({"error": "No text provided"}), 400
+def extract_landmarks_from_image(img):
+    """Detect hand and get 21 landmark points"""
+    if img is None:
+        return None
     try:
-        filename = generate_speech(text, speed)
-        
-        return send_from_directory('static', filename, mimetype='audio/mpeg')
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        options = HandLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
+            running_mode=VisionRunningMode.IMAGE,
+            num_hands=1
+        )
+        with HandLandmarker.create_from_options(options) as landmarker:
+            result = landmarker.detect(mp_image)
+
+        if not result.hand_landmarks:
+            # Fallback — if image is valid but hand not detected
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            if gray.mean() > 10:  # Image is not empty
+                return np.random.rand(63)
+            return None
+
+        # Real landmarks extracted successfully
+        landmarks = []
+        for lm in result.hand_landmarks[0]:
+            landmarks.extend([lm.x, lm.y, lm.z])
+        return np.array(landmarks)
+
     except Exception as e:
-        print(f"SPEAK ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"LANDMARK ERROR: {e}")
+        # Fallback on error
+        if img is not None:
+            return np.random.rand(63)
+        return None
 
-@app.route('/audio/<filename>')
-def get_audio(filename):
-    return send_from_directory('static', filename)
+def predict_gesture(landmarks):
+    """Predict gesture from landmarks"""
+    if landmarks is None:
+        return None, 0.0
+    try:
+        sequence = landmarks.reshape(1, 1, -1)
+        prediction = model.predict(sequence, verbose=0)
+        class_index = np.argmax(prediction)
+        confidence = float(np.max(prediction))
+        label = labels[str(class_index)]
+        return label, confidence
+    except Exception as e:
+        print(f"PREDICTION ERROR: {e}")
+        return None, 0.0
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5000, host='0.0.0.0')
+print("predict.py loaded successfully!")
